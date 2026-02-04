@@ -20,7 +20,7 @@ INSTALL_DIR="/opt/vortexl2"
 BIN_PATH="/usr/local/bin/vortexl2"
 SYSTEMD_DIR="/etc/systemd/system"
 CONFIG_DIR="/etc/vortexl2"
-REPO_URL="https://github.com/iliya-Developer/VortexL2.git"
+REPO_URL="https://github.com/babakazizigithub/VortexL2.git"
 REPO_BRANCH="main"
 
 echo -e "${CYAN}"
@@ -86,12 +86,12 @@ if command -v git &> /dev/null; then
         echo -e "${YELLOW}Git clone failed, trying manual download...${NC}"
         mkdir -p "$INSTALL_DIR"
         # If git fails, try downloading as archive
-        curl -fsSL "https://github.com/iliya-Developer/VortexL2/archive/refs/heads/${REPO_BRANCH}.tar.gz" | \
+        curl -fsSL "https://github.com/babakazizigithub/VortexL2/archive/refs/heads/${REPO_BRANCH}.tar.gz" | \
             tar -xz -C "$INSTALL_DIR" --strip-components=1
     }
 else
     mkdir -p "$INSTALL_DIR"
-    curl -fsSL "https://github.com/iliya-Developer/VortexL2/archive/refs/heads/${REPO_BRANCH}.tar.gz" | \
+    curl -fsSL "https://github.com/babakazizigithub/VortexL2/archive/refs/heads/${REPO_BRANCH}.tar.gz" | \
         tar -xz -C "$INSTALL_DIR" --strip-components=1
 fi
 
