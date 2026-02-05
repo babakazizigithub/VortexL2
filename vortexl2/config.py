@@ -31,6 +31,10 @@ class TunnelConfig:
         "peer_session_id": 20,
         "interface_index": 0,
         "forwarded_ports": [],
+        "use_udp2raw": False,      # Toggle for add-on
+        "udp2raw_port": 4096,      # Port to fake-tcp listen/connect
+        "udp2raw_secret": "vortex", # Shared secret
+        "udp_encap_port": 1701,    # Local UDP port for L2TP
     }
     
     def __init__(self, name: str, config_data: Dict[str, Any] = None, auto_save: bool = True):
@@ -224,6 +228,32 @@ class TunnelConfig:
         """Return configuration as dictionary."""
         return self._config.copy()
 
+    @property
+    def use_udp2raw(self) -> bool:
+        return self._config.get("use_udp2raw", False)
+
+    @use_udp2raw.setter
+    def use_udp2raw(self, value: bool) -> None:
+        self._config["use_udp2raw"] = value
+        self._save()
+
+    @property
+    def udp2raw_port(self) -> int:
+        return self._config.get("udp2raw_port", 4096)
+    
+    @udp2raw_port.setter
+    def udp2raw_port(self, value: int) -> None:
+        self._config["udp2raw_port"] = value
+        self._save()
+
+    @property
+    def udp2raw_secret(self) -> str:
+        return self._config.get("udp2raw_secret", "vortex")
+    
+    @udp2raw_secret.setter
+    def udp2raw_secret(self, value: str) -> None:
+        self._config["udp2raw_secret"] = value
+        self._save()
 
 class ConfigManager:
     """Manages multiple tunnel configurations."""
