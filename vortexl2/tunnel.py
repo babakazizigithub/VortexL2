@@ -141,23 +141,49 @@ class TunnelManager:
     
     def create_tunnel(self) -> Tuple[bool, str]:
         """Create L2TP tunnel based on configuration."""
+        # 1. Validate IPs
         if not self.config.local_ip or not self.config.remote_ip:
             return False, "IPs not configured. Please configure tunnel first."
         
         ids = self.config.get_tunnel_ids()
         
+        # 2. Check if already exists
         if self.check_tunnel_exists():
-            return False, f"Tunnel {ids['tunnel_id']} already exists. Delete it first or use recreate."
+            return False, f"Tunnel {ids['tunnel_id']} already exists. Delete it first."
         
+        # 3. Determine Encapsulation Mode (Standard vs UDP2RAW)
+        # We check if 'use_udp2raw' attribute exists to stay backward compatible
+        if hasattr(self.config, 'use_udp2raw') and self.config.use_udp2raw:
+            # --- UDP2RAW Enabled ---
+            # Kernel talks UDP to localhost (udp2raw wrapper intercepts this)
+            encap_param = "encap udp"
+            local_ip = "127.0.0.1"
+            remote_ip = "127.0.0.1"
+            
+            # Use Tunnel ID as unique UDP port to avoid conflicts
+            # This maps l2tp UDP traffic to local ports
+            udp_ports = f"udp_sport {ids['tunnel_id']} udp_dport {ids['peer_tunnel_id']}"
+            
+        else:
+            # --- Standard L2TPv3 ---
+            # Direct Raw-IP connection (Protocol 115)
+            encap_param = "encap ip"
+            local_ip = self.config.local_ip
+            remote_ip = self.config.remote_ip
+            udp_ports = "" # No UDP ports needed for IP encap
+
+        # 4. Construct Command
         cmd = (
             f"ip l2tp add tunnel "
             f"tunnel_id {ids['tunnel_id']} "
             f"peer_tunnel_id {ids['peer_tunnel_id']} "
-            f"encap ip "
-            f"local {self.config.local_ip} "
-            f"remote {self.config.remote_ip}"
+            f"{encap_param} "
+            f"local {local_ip} "
+            f"remote {remote_ip} "
+            f"{udp_ports}"
         )
         
+        # 5. Execute
         result = run_command(cmd)
         if not result.success:
             return False, f"Failed to create tunnel: {result.stderr}"
@@ -369,3 +395,26 @@ class TunnelManager:
                 status["interface_ip"] = ip_match.group(1)
         
         return status
+     def start_udp2raw(self, mode: str) -> Tuple[bool, str]:
+        """
+        Start udp2raw service.
+        mode: 'server' (Kharej) or 'client' (Iran)
+        """
+        if not self.config.use_udp2raw:
+            return True, "UDP2RAW disabled"
+
+        # Local L2TP is always on 127.0.0.1:1701 when using wrapper
+        local_l2tp = f"127.0.0.1:{self.config.tunnel_id}" # Use tunnel_id as port to avoid conflicts
+        
+        raw_port = self.config.udp2raw_port
+        secret = self.config.udp2raw_secret
+        
+        if mode == "server":
+            # Server: Listen on TCP port, fwd to local L2TP
+            cmd = f"udp2raw -s -l 0.0.0.0:{raw_port} -r {local_l2tp} -k {secret} --raw-mode faketcp -a"
+        else:
+            # Client: Listen on local L2TP port, connect to Remote TCP
+            remote_ip = self.config.remote_ip
+            cmd = f"udp2raw -c -l {local_l2tp} -r {remote_ip}:{raw_port} -k {secret} --raw-mode faketcp -a"
+
+        return True, "UDP2RAW logic ready (Needs Service Implementation)"
