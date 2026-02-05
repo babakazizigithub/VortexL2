@@ -2,10 +2,13 @@
 VortexL2 L2TPv3 Tunnel Management
 
 Handles L2TPv3 tunnel and session creation/deletion using iproute2.
+Also manages UDP2RAW service for anti-censorship mode.
 """
 
 import subprocess
 import re
+import os
+import time
 from typing import Optional, Dict, Tuple, List
 from dataclasses import dataclass
 
@@ -139,6 +142,86 @@ class TunnelManager:
         pattern = rf"Session\s+{session_id}\s+in\s+tunnel\s+{tunnel_id}"
         return bool(re.search(pattern, result.stdout))
     
+    # --- UDP2RAW Service Management ---
+
+    def _get_udp2raw_service_name(self) -> str:
+        return f"vortexl2-raw-{self.config.name}.service"
+
+    def setup_udp2raw_service(self) -> Tuple[bool, str]:
+        """Create and start udp2raw systemd service."""
+        # Check if feature is enabled in config
+        if not getattr(self.config, 'use_udp2raw', False):
+            return True, "UDP2RAW disabled"
+
+        service_name = self._get_udp2raw_service_name()
+        service_path = f"/etc/systemd/system/{service_name}"
+        
+        # Determine Mode (Client vs Server) based on Tunnel IDs
+        # Heuristic: If tunnel_id < peer_tunnel_id => Client (Iran), else Server (Kharej)
+        # Iran (1000) -> Kharej (2000)
+        is_client = self.config.tunnel_id < self.config.peer_tunnel_id
+        
+        # Parameters
+        raw_port = getattr(self.config, 'udp2raw_port', 4096)
+        secret = getattr(self.config, 'udp2raw_secret', 'vortex')
+        
+        if is_client:
+            # CLIENT MODE (Iran)
+            # Listen on Localhost:PeerID (where Kernel sends packets)
+            # Send to RemoteIP:RawPort
+            listen_addr = f"127.0.0.1:{self.config.peer_tunnel_id}"
+            remote_addr = f"{self.config.remote_ip}:{raw_port}"
+            cmd = f"/usr/local/bin/udp2raw -c -l {listen_addr} -r {remote_addr} -k {secret} --raw-mode faketcp -a"
+            desc = f"Client -> {remote_addr}"
+        else:
+            # SERVER MODE (Kharej)
+            # Listen on 0.0.0.0:RawPort (Public Internet)
+            # Send to Localhost:TunnelID (Where Kernel is listening)
+            listen_addr = f"0.0.0.0:{raw_port}"
+            target_addr = f"127.0.0.1:{self.config.tunnel_id}"
+            cmd = f"/usr/local/bin/udp2raw -s -l {listen_addr} -r {target_addr} -k {secret} --raw-mode faketcp -a"
+            desc = f"Server <- {listen_addr}"
+
+        # Create Service File
+        service_content = f"""[Unit]
+Description=VortexL2 UDP2RAW Wrapper - {self.config.name} ({desc})
+After=network.target
+
+[Service]
+Type=simple
+ExecStart={cmd}
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+"""
+        try:
+            with open(service_path, 'w') as f:
+                f.write(service_content)
+            
+            run_command("systemctl daemon-reload")
+            run_command(f"systemctl enable --now {service_name}")
+            return True, f"UDP2RAW service started ({desc})"
+        except Exception as e:
+            return False, f"Failed to start UDP2RAW: {e}"
+
+    def remove_udp2raw_service(self):
+        """Stop and remove udp2raw service."""
+        # Clean up regardless of current config status
+        service_name = self._get_udp2raw_service_name()
+        run_command(f"systemctl stop {service_name}")
+        run_command(f"systemctl disable {service_name}")
+        
+        if os.path.exists(f"/etc/systemd/system/{service_name}"):
+            try:
+                os.remove(f"/etc/systemd/system/{service_name}")
+                run_command("systemctl daemon-reload")
+            except:
+                pass
+
+    # --- End UDP2RAW Management ---
+
     def create_tunnel(self) -> Tuple[bool, str]:
         """Create L2TP tunnel based on configuration."""
         # 1. Validate IPs
@@ -151,17 +234,19 @@ class TunnelManager:
         if self.check_tunnel_exists():
             return False, f"Tunnel {ids['tunnel_id']} already exists. Delete it first."
         
-        # 3. Determine Encapsulation Mode (Standard vs UDP2RAW)
-        # We check if 'use_udp2raw' attribute exists to stay backward compatible
-        if hasattr(self.config, 'use_udp2raw') and self.config.use_udp2raw:
+        # 3. Determine Encapsulation Mode
+        if getattr(self.config, 'use_udp2raw', False):
             # --- UDP2RAW Enabled ---
-            # Kernel talks UDP to localhost (udp2raw wrapper intercepts this)
+            # Kernel talks UDP to localhost
             encap_param = "encap udp"
-            local_ip = "127.0.0.1"
+            # Kernel listens on 127.0.0.1
+            local_ip = "127.0.0.1" 
+            # Kernel sends to 127.0.0.1
             remote_ip = "127.0.0.1"
             
-            # Use Tunnel ID as unique UDP port to avoid conflicts
-            # This maps l2tp UDP traffic to local ports
+            # Kernel Ports:
+            # udp_sport: Local bind port (must match what UDP2RAW sends TO on Server side)
+            # udp_dport: Remote destination port (must match what UDP2RAW listens ON on Client side)
             udp_ports = f"udp_sport {ids['tunnel_id']} udp_dport {ids['peer_tunnel_id']}"
             
         else:
@@ -216,7 +301,6 @@ class TunnelManager:
     def bring_up_interface(self) -> Tuple[bool, str]:
         """Bring up the tunnel interface."""
         # Wait a moment for interface to appear
-        import time
         time.sleep(0.5)
         
         result = run_command(f"ip link set {self.interface_name} up")
@@ -278,31 +362,40 @@ class TunnelManager:
         return True, f"Tunnel {ids['tunnel_id']} deleted"
     
     def full_setup(self) -> Tuple[bool, str]:
-        """Perform full tunnel setup: create tunnel, session, bring up interface, assign IP."""
+        """Perform full tunnel setup: UDP2RAW -> tunnel -> session -> interface -> IP."""
         steps = []
         tunnel_name = self.config.name
         
         steps.append(f"=== Setting up tunnel: {tunnel_name} ===")
         
-        # Create tunnel
+        # 1. Start UDP2RAW Service (if enabled)
+        if getattr(self.config, 'use_udp2raw', False):
+            success, msg = self.setup_udp2raw_service()
+            steps.append(msg)
+            if not success:
+                return False, "\n".join(steps)
+            # Give service a moment to start
+            time.sleep(1)
+
+        # 2. Create tunnel
         success, msg = self.create_tunnel()
         steps.append(f"Create tunnel: {msg}")
         if not success and "already exists" not in msg:
             return False, "\n".join(steps)
         
-        # Create session
+        # 3. Create session
         success, msg = self.create_session()
         steps.append(f"Create session: {msg}")
         if not success and "already exists" not in msg:
             return False, "\n".join(steps)
         
-        # Bring up interface
+        # 4. Bring up interface
         success, msg = self.bring_up_interface()
         steps.append(f"Bring up interface: {msg}")
         if not success:
             return False, "\n".join(steps)
         
-        # Assign IP
+        # 5. Assign IP
         success, msg = self.assign_ip()
         steps.append(f"Assign IP: {msg}")
         if not success:
@@ -312,19 +405,24 @@ class TunnelManager:
         return True, "\n".join(steps)
     
     def full_teardown(self) -> Tuple[bool, str]:
-        """Perform full tunnel teardown: delete session and tunnel."""
+        """Perform full tunnel teardown."""
         steps = []
         tunnel_name = self.config.name
         
         steps.append(f"=== Tearing down tunnel: {tunnel_name} ===")
         
-        # Delete session
+        # 1. Delete session
         success, msg = self.delete_session()
         steps.append(f"Delete session: {msg}")
         
-        # Delete tunnel
+        # 2. Delete tunnel
         success, msg = self.delete_tunnel()
         steps.append(f"Delete tunnel: {msg}")
+        
+        # 3. Stop UDP2RAW Service
+        if getattr(self.config, 'use_udp2raw', False):
+            self.remove_udp2raw_service()
+            steps.append("UDP2RAW service removed")
         
         steps.append(f"\n✓ Tunnel '{tunnel_name}' teardown complete!")
         return True, "\n".join(steps)
@@ -334,22 +432,20 @@ class TunnelManager:
         Check ping to the remote interface IP.
         Returns formatted string like '45ms' or 'Timeout'.
         """
-
         target_ip = self.config.interface_ip.split('/')[0]
         ip_parts = target_ip.split('.')
         last_octet = int(ip_parts[-1])
         
+        # Simple logic for /30 subnet (assuming .1 and .2 pair)
         if last_octet % 2 == 1: 
             target_ip = f"{ip_parts[0]}.{ip_parts[1]}.{ip_parts[2]}.{last_octet + 1}"
         else: 
             target_ip = f"{ip_parts[0]}.{ip_parts[1]}.{ip_parts[2]}.{last_octet - 1}"
-
         
         cmd = f"ping -c {count} -W {timeout} {target_ip}"
         result = run_command(cmd)
 
         if result.success:
-            
             import re
             match = re.search(r'time=([\d.]+)\s*ms', result.stdout)
             if match:
@@ -395,26 +491,3 @@ class TunnelManager:
                 status["interface_ip"] = ip_match.group(1)
         
         return status
-     def start_udp2raw(self, mode: str) -> Tuple[bool, str]:
-        """
-        Start udp2raw service.
-        mode: 'server' (Kharej) or 'client' (Iran)
-        """
-        if not self.config.use_udp2raw:
-            return True, "UDP2RAW disabled"
-
-        # Local L2TP is always on 127.0.0.1:1701 when using wrapper
-        local_l2tp = f"127.0.0.1:{self.config.tunnel_id}" # Use tunnel_id as port to avoid conflicts
-        
-        raw_port = self.config.udp2raw_port
-        secret = self.config.udp2raw_secret
-        
-        if mode == "server":
-            # Server: Listen on TCP port, fwd to local L2TP
-            cmd = f"udp2raw -s -l 0.0.0.0:{raw_port} -r {local_l2tp} -k {secret} --raw-mode faketcp -a"
-        else:
-            # Client: Listen on local L2TP port, connect to Remote TCP
-            remote_ip = self.config.remote_ip
-            cmd = f"udp2raw -c -l {local_l2tp} -r {remote_ip}:{raw_port} -k {secret} --raw-mode faketcp -a"
-
-        return True, "UDP2RAW logic ready (Needs Service Implementation)"
