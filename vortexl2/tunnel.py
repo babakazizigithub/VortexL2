@@ -302,7 +302,35 @@ class TunnelManager:
         
         steps.append(f"\n✓ Tunnel '{tunnel_name}' teardown complete!")
         return True, "\n".join(steps)
-    
+
+    def check_ping(self, count: int = 1, timeout: int = 1) -> str:
+        """
+        Check ping to the remote interface IP.
+        Returns formatted string like '45ms' or 'Timeout'.
+        """
+
+        target_ip = self.config.interface_ip.split('/')[0]
+        ip_parts = target_ip.split('.')
+        last_octet = int(ip_parts[-1])
+        
+        if last_octet % 2 == 1: 
+            target_ip = f"{ip_parts[0]}.{ip_parts[1]}.{ip_parts[2]}.{last_octet + 1}"
+        else: 
+            target_ip = f"{ip_parts[0]}.{ip_parts[1]}.{ip_parts[2]}.{last_octet - 1}"
+
+        
+        cmd = f"ping -c {count} -W {timeout} {target_ip}"
+        result = run_command(cmd)
+
+        if result.success:
+            
+            import re
+            match = re.search(r'time=([\d.]+)\s*ms', result.stdout)
+            if match:
+                return f"{match.group(1)}ms"
+            return "OK"
+        return "Timeout"
+        
     def get_status(self) -> Dict[str, any]:
         """Get comprehensive tunnel status."""
         status = {
