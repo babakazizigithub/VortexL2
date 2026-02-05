@@ -108,6 +108,24 @@ apt-get install -y -qq python3-rich python3-yaml 2>/dev/null || {
     }
 }
 
+#Install udp2raw
+echo -e "${YELLOW}[5.5/6] Installing udp2raw...${NC}"
+# Download static binary
+curl -fsSL "https://github.com/wangyu-/udp2raw-tunnel/releases/download/20200818.0/udp2raw_binaries.tar.gz" | \
+    tar -xz -C /tmp/
+
+# Move the correct binary (assuming x86_64 for most servers)
+if [ "$(uname -m)" = "x86_64" ]; then
+    mv /tmp/udp2raw_amd64 /usr/local/bin/udp2raw
+elif [ "$(uname -m)" = "aarch64" ]; then
+    mv /tmp/udp2raw_arm_asm_aes /usr/local/bin/udp2raw
+else
+    echo -e "${RED}Architecture not fully supported for auto-install of udp2raw${NC}"
+fi
+
+chmod +x /usr/local/bin/udp2raw
+rm -rf /tmp/udp2raw*
+
 # Create launcher script
 cat > "$BIN_PATH" << 'EOF'
 #!/bin/bash
