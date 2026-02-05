@@ -359,7 +359,26 @@ def prompt_tunnel_config(config: TunnelConfig, side: str) -> bool:
         default=str(default_peer_session_id)
     )
     config.peer_session_id = int(peer_session_id_input)
+
+    # Prompt for UDP2RAW Add-on
+    console.print("\n[bold white]Add-ons:[/]")
+    use_raw = Confirm.ask("[bold yellow]Enable UDP2RAW (Anti-Censorship)?[/]", default=False)
+    config.use_udp2raw = use_raw
     
+    if use_raw:
+        # Prompt for Fake-TCP Port
+        while True:
+            port = Prompt.ask("[cyan]UDP2RAW TCP Port[/]", default="4096")
+            try:
+                config.udp2raw_port = int(port)
+                break
+            except ValueError:
+                console.print("[red]Invalid port[/]")
+        
+        # Prompt for Password
+        pwd = Prompt.ask("[cyan]Encryption Password[/]", default="vortex")
+        config.udp2raw_secret = pwd
+        
     console.print("\n[green]✓ Configuration saved![/]")
     return True
 
