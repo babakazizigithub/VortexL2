@@ -144,7 +144,7 @@ def show_forwards_menu() -> str:
 
 
 def show_tunnel_list(manager: ConfigManager):
-    """Display list of all configured tunnels with status."""
+    """Display list of all configured tunnels with status and ping."""
     from .tunnel import TunnelManager
     
     tunnels = manager.get_all_tunnels()
@@ -161,21 +161,37 @@ def show_tunnel_list(manager: ConfigManager):
     table.add_column("Interface", style="yellow")
     table.add_column("Tunnel ID", style="white")
     table.add_column("Status", style="white")
+    table.add_column("Ping", style="bold") 
     
-    for i, config in enumerate(tunnels, 1):
-        tunnel_mgr = TunnelManager(config)
-        is_running = tunnel_mgr.check_tunnel_exists()
-        status = "[green]Running[/]" if is_running else "[red]Stopped[/]"
-        
-        table.add_row(
-            str(i),
-            config.name,
-            config.local_ip or "-",
-            config.remote_ip or "-",
-            config.interface_name,
-            str(config.tunnel_id),
-            status
-        )
+    with console.status("[bold green]Checking tunnel health...[/]"):
+        for i, config in enumerate(tunnels, 1):
+            tunnel_mgr = TunnelManager(config)
+            is_running = tunnel_mgr.check_tunnel_exists()
+            
+            status = "[green]Running[/]" if is_running else "[red]Stopped[/]"
+            
+            ping_result = "-"
+            ping_style = "dim"
+            
+            if is_running:
+                ping_val = tunnel_mgr.check_ping() 
+                if "Timeout" in ping_val:
+                    ping_result = "Timeout 🔴"
+                    ping_style = "red"
+                else:
+                    ping_result = f"{ping_val} 🟢"
+                    ping_style = "green"
+
+            table.add_row(
+                str(i),
+                config.name,
+                config.local_ip or "-",
+                config.remote_ip or "-",
+                config.interface_name,
+                str(config.tunnel_id),
+                status,
+                f"[{ping_style}]{ping_result}[/]"
+            )
     
     console.print(table)
 
